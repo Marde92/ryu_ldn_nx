@@ -196,6 +196,17 @@ ICommunicationService::ICommunicationService(ncm::ProgramId program_id)
     // NOTE: Technically LocalCommunicationId can differ from program_id (stored in NACP),
     // but reading NACP via nsGetApplicationControlData() causes deadlocks in MITM context.
     // For most games, program_id == LocalCommunicationId, and the server will accept either.
+    // MHR_TEST_VERSION_OVERRIDE: diagnostic override for Monster Hunter Rise 16.0.2.
+    // Avoid ns/NACP queries in the LDN MITM service (known deadlock risk).
+    // This affects only this game's lobby version metadata; other games unchanged.
+    if (m_program_id.value == 0x0100B04011742000ULL) {
+        static constexpr char kMhrVersion[] = "16.0.2";
+        static_assert(sizeof(kMhrVersion) <= sizeof(m_game_version));
+        std::memset(m_game_version, 0, sizeof(m_game_version));
+        std::memcpy(m_game_version, kMhrVersion, sizeof(kMhrVersion));
+        LOG_INFO("MHR_TEST_VERSION_OVERRIDE: game_version=16.0.2 for program_id=0x%016lx", m_program_id.value);
+    }
+
     m_local_communication_id = m_program_id.value;
     LOG_INFO("LocalCommunicationId: 0x%016lx (using program_id)", m_local_communication_id);
 
