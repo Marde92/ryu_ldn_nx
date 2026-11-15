@@ -207,8 +207,15 @@ ICommunicationService::ICommunicationService(ncm::ProgramId program_id)
         LOG_INFO("MHR_TEST_VERSION_OVERRIDE: game_version=16.0.2 for program_id=0x%016lx", m_program_id.value);
     }
 
-    m_local_communication_id = m_program_id.value;
-    LOG_INFO("LocalCommunicationId: 0x%016lx (using program_id)", m_local_communication_id);
+    // MHR_LDN_ID_TEST_OVERRIDE: use the LocalCommunicationId observed in Ryubing.
+    // Diagnostic only; the correct long-term fix is reading NACP metadata safely.
+    if (m_program_id.value == 0x0100B04011742000ULL) {
+        m_local_communication_id = 0x0100559011740000ULL;
+        LOG_INFO("MHR_LDN_ID_TEST_OVERRIDE: local_comm_id=0x%016lx", m_local_communication_id);
+    } else {
+        m_local_communication_id = m_program_id.value;
+        LOG_INFO("LocalCommunicationId: 0x%016lx (using program_id)", m_local_communication_id);
+    }
 
     // Configure packet callback to receive server responses
     // Use static callback with user_data to route to instance method
