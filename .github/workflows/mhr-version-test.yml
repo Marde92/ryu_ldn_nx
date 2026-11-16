@@ -69,3 +69,4 @@ jobs:
           name: ryu-ldn-nx-MHR-16.0.2-test
           path: mhr-test-package/
           if-no-files-found: error
+          include-hidden-files: true
