@@ -7,11 +7,11 @@ namespace ryu_ldn::metadata {
 namespace {
 ams::os::SdkMutex g_mutex;
 ams::os::Event g_request_event(ams::os::EventClearMode_AutoClear);
-ams::os::Thread g_thread;
-alignas(ams::os::ThreadStackAlignment) ams::u8 g_thread_stack[0x8000];
+ams::os::ThreadType g_thread;
+alignas(ams::os::ThreadStackAlignment) u8 g_thread_stack[0x8000];
 bool g_started = false;
-ams::u64 g_pending = 0;
-ams::u64 g_completed = 0;
+u64 g_pending = 0;
+u64 g_completed = 0;
 bool g_success = false;
 GameMetadata g_metadata{};
 // Heap/static rather than thread stack: the returned struct contains a 128-KiB icon.
@@ -20,7 +20,7 @@ alignas(0x1000) NsApplicationControlData g_control_data{};
 void Worker(void*) {
     for (;;) {
         g_request_event.Wait();
-        ams::u64 id;
+        u64 id;
         {
             std::scoped_lock lk(g_mutex);
             id = g_pending;
@@ -30,7 +30,7 @@ void Worker(void*) {
         result.application_id = id;
         ams::Result rc = nsInitialize();
         if (R_SUCCEEDED(rc)) {
-            ams::u64 actual_size = 0;
+            u64 actual_size = 0;
             rc = nsGetApplicationControlData(NsApplicationControlSource_Storage, id,
                                              &g_control_data, sizeof(g_control_data),
                                              &actual_size);
@@ -61,7 +61,7 @@ void Worker(void*) {
                      16, result.display_version);
         } else {
             LOG_ERROR("NACP_AUTO: FAILED app=0x%016llX rc=0x%X (no hardcoded/title-ID fallback)",
-                      static_cast<unsigned long long>(id), static_cast<unsigned>(rc));
+                      static_cast<unsigned long long>(id), rc.GetValue());
         }
     }
 }
@@ -72,16 +72,16 @@ void StartWorker() {
     ams::Result rc = ams::os::CreateThread(&g_thread, Worker, nullptr,
                                           g_thread_stack, sizeof(g_thread_stack), 25);
     if (R_FAILED(rc)) {
-        LOG_ERROR("NACP_AUTO: worker thread creation failed rc=0x%X", static_cast<unsigned>(rc));
+        LOG_ERROR("NACP_AUTO: worker thread creation failed rc=0x%X", rc.GetValue());
         return;
     }
     ams::os::SetThreadNamePointer(&g_thread, "nacp_meta");
     ams::os::StartThread(&g_thread);
     g_started = true;
 }
-void Request(ams::u64 program_id) {
+void Request(u64 program_id) {
     // Application IDs ignore the update-program suffix (0x800).
-    const ams::u64 app_id = program_id & ~0xFFFULL;
+    const u64 app_id = program_id & ~0xFFFULL;
     {
         std::scoped_lock lk(g_mutex);
         if (g_pending == app_id) return;
@@ -91,9 +91,9 @@ void Request(ams::u64 program_id) {
     }
     g_request_event.Signal();
 }
-bool WaitFor(ams::u64 program_id, GameMetadata* result, ams::s64 timeout_ms) {
-    const ams::u64 id = program_id & ~0xFFFULL;
-    for (ams::s64 ms = 0; ms <= timeout_ms; ms += 10) {
+bool WaitFor(u64 program_id, GameMetadata* result, s64 timeout_ms) {
+    const u64 id = program_id & ~0xFFFULL;
+    for (s64 ms = 0; ms <= timeout_ms; ms += 10) {
         {
             std::scoped_lock lk(g_mutex);
             if (g_completed == id) {
@@ -107,8 +107,8 @@ bool WaitFor(ams::u64 program_id, GameMetadata* result, ams::s64 timeout_ms) {
               static_cast<unsigned long long>(id));
     return false;
 }
-bool IsAllowed(const GameMetadata& m, ams::u64 id) {
-    for (ams::u64 allowed : m.local_ids) if (allowed && allowed == id) return true;
+bool IsAllowed(const GameMetadata& m, u64 id) {
+    for (u64 allowed : m.local_ids) if (allowed && allowed == id) return true;
     return false;
 }
 }
