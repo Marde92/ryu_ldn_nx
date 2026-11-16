@@ -1,0 +1,59 @@
+name: Build standalone local LDN server for Windows
+
+on:
+  push:
+    branches:
+      - tools/local-ldn-server-exe
+  workflow_dispatch:
+
+jobs:
+  build-windows-exe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tooling branch
+        uses: actions/checkout@v4
+
+      - name: Install .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Get upstream LDN server
+        run: git clone --depth 1 https://github.com/Ryubing/LdnServer.git server
+
+      - name: Disable optional Redis statistics and unsupported Windows signals
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('server/Program.cs')
+          s = p.read_text(encoding='utf-8-sig')
+          assert 'StatsDumper.Start(redisEndpoint);' in s
+          assert 'StatsDumper.Stop();' in s
+          s = s.replace('StatsDumper.Start(redisEndpoint);', '/* Optional Redis statistics disabled for standalone local server. */')
+          s = s.replace('StatsDumper.Stop();', '/* Redis statistics disabled. */')
+          for signal in ['SIGHUP', 'SIGQUIT', 'SIGTERM']:
+              s = s.replace(f'            PosixSignalRegistration.Create(PosixSignal.{signal}, _ => StopEvent.Set());', '')
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Publish self-contained single-file Windows exe
+        run: >
+          dotnet publish server/LanPlayServer.csproj -c Release -r win-x64
+          --self-contained true -p:PublishAot=false -p:PublishSingleFile=true
+          -p:PublishTrimmed=false -p:DebugType=None
+          -o publish
+
+      - name: Package local server
+        run: |
+          mkdir -p package
+          cp publish/LanPlayServer.exe package/
+          cp publish/gamelist.json package/
+          printf 'Run LanPlayServer.exe from this folder.\nPort: TCP 30456.\nKeep this window open while playing.\nRedis and Docker are NOT required.\n' > package/README.txt
+
+      - name: Upload EXE and game list
+        uses: actions/upload-artifact@v4
+        with:
+          name: Local-LDN-Server-Windows-x64
+          path: package/
+          if-no-files-found: error
