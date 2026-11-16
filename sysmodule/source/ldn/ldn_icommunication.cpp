@@ -10,6 +10,7 @@
 #include "ldn_shared_state.hpp"
 #include "../config/config_ipc_service.hpp"
 #include "../debug/log.hpp"
+#include "../metadata/game_metadata.hpp"
 #include "../bsd/proxy_socket_manager.hpp"
 #include "../bsd/bsd_mitm_service.hpp"
 #include <arpa/inet.h>
@@ -192,30 +193,11 @@ ICommunicationService::ICommunicationService(ncm::ProgramId program_id)
 {
     LOG_INFO("ICommunicationService created with program_id=0x%016lx", m_program_id.value);
 
-    // Use program_id as LocalCommunicationId
-    // NOTE: Technically LocalCommunicationId can differ from program_id (stored in NACP),
-    // but reading NACP via nsGetApplicationControlData() causes deadlocks in MITM context.
-    // For most games, program_id == LocalCommunicationId, and the server will accept either.
-    // MHR_TEST_VERSION_OVERRIDE: diagnostic override for Monster Hunter Rise 16.0.2.
-    // Avoid ns/NACP queries in the LDN MITM service (known deadlock risk).
-    // This affects only this game's lobby version metadata; other games unchanged.
-    if (m_program_id.value == 0x0100B04011742000ULL) {
-        static constexpr char kMhrVersion[] = "16.0.2";
-        static_assert(sizeof(kMhrVersion) <= sizeof(m_game_version));
-        std::memset(m_game_version, 0, sizeof(m_game_version));
-        std::memcpy(m_game_version, kMhrVersion, sizeof(kMhrVersion));
-        LOG_INFO("MHR_TEST_VERSION_OVERRIDE: game_version=16.0.2 for program_id=0x%016lx", m_program_id.value);
-    }
-
-    // MHR_LDN_ID_TEST_OVERRIDE: use the LocalCommunicationId observed in Ryubing.
-    // Diagnostic only; the correct long-term fix is reading NACP metadata safely.
-    if (m_program_id.value == 0x0100B04011742000ULL) {
-        m_local_communication_id = 0x0100559011740000ULL;
-        LOG_INFO("MHR_LDN_ID_TEST_OVERRIDE: local_comm_id=0x%016lx", m_local_communication_id);
-    } else {
-        m_local_communication_id = m_program_id.value;
-        LOG_INFO("LocalCommunicationId: 0x%016lx (using program_id)", m_local_communication_id);
-    }
+    // No title-ID or MHR-specific fallback: request installed application NACP.
+    // The NS service call occurs on an independent worker outside LDN MITM IPC.
+    ryu_ldn::metadata::Request(m_program_id.value);
+    LOG_INFO("NACP_AUTO: requested metadata for program_id=0x%016llX",
+             static_cast<unsigned long long>(m_program_id.value));
 
     // Configure packet callback to receive server responses
     // Use static callback with user_data to route to instance method
@@ -643,17 +625,32 @@ Result ICommunicationService::Scan(
 {
     AMS_UNUSED(channel);
 
-    // Replace LocalCommunicationId=-1 or 0 with real LocalCommunicationId from NACP
-    // Nintendo SDK does this internally, but we intercept before that happens
-    // See Ryujinx NeedsRealId handling - uses NACP LocalCommunicationId[0], not program_id
+    // Nintendo only interprets the IntentId if the corresponding scan flag is set.
+    // The Ryujinx server still requires an application ID filter to avoid unrelated games.
+    ryu_ldn::metadata::GameMetadata metadata{};
+    if (!ryu_ldn::metadata::WaitFor(m_program_id.value, &metadata, 5000)) {
+        LOG_ERROR("Scan: installed NACP unavailable; no title-ID fallback");
+        count.SetValue(0);
+        R_RETURN(MAKERESULT(0x10, 22));
+    }
+    m_local_communication_id = metadata.local_ids[0];
     u64 local_comm_id = filter.networkId.intentId.localCommunicationId;
     LOG_INFO("LDN_INPUT Scan: requested_local_comm_id=0x%016llX (%s), flag=0x%X",
              static_cast<unsigned long long>(local_comm_id),
              local_comm_id == static_cast<u64>(-1) ? "AUTO_MINUS_ONE" : (local_comm_id == 0 ? "ZERO" : "EXPLICIT"),
              filter.flag);
-    if (local_comm_id == static_cast<u64>(-1) || local_comm_id == 0) {
-        local_comm_id = m_local_communication_id;
-        LOG_INFO("Scan() replacing local_comm_id with NACP LocalCommunicationId=0x%016lx", local_comm_id);
+    if (!(filter.flag & ScanFilterFlag_LocalCommunicationId)) {
+        // Nintendo ignores the supplied ID when this filter flag is clear.
+        // Restrict only the REMOTE Ryujinx scan to this application's default ID.
+        local_comm_id = metadata.local_ids[0];
+        LOG_INFO("Scan: flag has no ID filter, server scope uses NACP[0]=0x%016llX",
+                 static_cast<unsigned long long>(local_comm_id));
+    } else if (local_comm_id == static_cast<u64>(-1)) {
+        local_comm_id = metadata.local_ids[0];
+    } else if (!ryu_ldn::metadata::IsAllowed(metadata, local_comm_id)) {
+        LOG_ERROR("Scan: explicit LocalCommunicationId not listed in installed NACP");
+        count.SetValue(0);
+        R_RETURN(MAKERESULT(0x10, 23));
     }
 
     LOG_INFO("Scan() called, local_comm_id=0x%016lx, scene_id=%u, flags=0x%x, networkType=0x%x",
@@ -848,15 +845,24 @@ Result ICommunicationService::CloseAccessPoint() {
 }
 
 Result ICommunicationService::CreateNetwork(const CreateNetworkConfig &data) {
-    // Replace LocalCommunicationId=-1 with real LocalCommunicationId from NACP
-    // See Ryujinx NeedsRealId handling - uses NACP LocalCommunicationId[0], not program_id
+    ryu_ldn::metadata::GameMetadata metadata{};
+    if (!ryu_ldn::metadata::WaitFor(m_program_id.value, &metadata, 5000)) {
+        LOG_ERROR("CreateNetwork: installed NACP unavailable; refusing to invent an ID/version");
+        R_RETURN(MAKERESULT(0x10, 22));
+    }
+    m_local_communication_id = metadata.local_ids[0];
+    std::memcpy(m_game_version, metadata.display_version, sizeof(m_game_version));
     u64 local_comm_id = data.networkConfig.intentId.localCommunicationId;
     LOG_INFO("LDN_INPUT CreateNetwork: requested_local_comm_id=0x%016llX (%s)",
              static_cast<unsigned long long>(local_comm_id),
              local_comm_id == static_cast<u64>(-1) ? "AUTO_MINUS_ONE" : (local_comm_id == 0 ? "ZERO" : "EXPLICIT"));
-    if (local_comm_id == static_cast<u64>(-1) || local_comm_id == 0) {
-        local_comm_id = m_local_communication_id;
-        LOG_INFO("CreateNetwork() replacing local_comm_id with NACP LocalCommunicationId=0x%016lx", local_comm_id);
+    if (local_comm_id == static_cast<u64>(-1)) {
+        local_comm_id = metadata.local_ids[0];
+        LOG_INFO("CreateNetwork: AUTO_MINUS_ONE -> installed NACP[0]=0x%016llX",
+                 static_cast<unsigned long long>(local_comm_id));
+    } else if (!ryu_ldn::metadata::IsAllowed(metadata, local_comm_id)) {
+        LOG_ERROR("CreateNetwork: explicit LocalCommunicationId not listed in installed NACP");
+        R_RETURN(MAKERESULT(0x10, 23));
     }
 
     LOG_INFO("CreateNetwork called, local_comm_id=0x%016lx (state before=%s)",
@@ -1175,15 +1181,21 @@ Result ICommunicationService::CloseStation() {
 }
 
 Result ICommunicationService::Connect(const ConnectNetworkData &dat, const NetworkInfo& data) {
-    // Replace LocalCommunicationId=-1 with real LocalCommunicationId from NACP
-    // See Ryujinx NeedsRealId handling - uses NACP LocalCommunicationId[0], not program_id
+    ryu_ldn::metadata::GameMetadata metadata{};
+    if (!ryu_ldn::metadata::WaitFor(m_program_id.value, &metadata, 5000)) {
+        LOG_ERROR("Connect: installed NACP unavailable; no title-ID fallback");
+        R_RETURN(MAKERESULT(0x10, 22));
+    }
+    m_local_communication_id = metadata.local_ids[0];
     u64 local_comm_id = data.networkId.intentId.localCommunicationId;
     LOG_INFO("LDN_INPUT Connect: requested_local_comm_id=0x%016llX (%s)",
              static_cast<unsigned long long>(local_comm_id),
              local_comm_id == static_cast<u64>(-1) ? "AUTO_MINUS_ONE" : (local_comm_id == 0 ? "ZERO" : "EXPLICIT"));
-    if (local_comm_id == static_cast<u64>(-1) || local_comm_id == 0) {
-        local_comm_id = m_local_communication_id;
-        LOG_INFO("Connect() replacing local_comm_id with NACP LocalCommunicationId=0x%016lx", local_comm_id);
+    if (local_comm_id == static_cast<u64>(-1)) {
+        local_comm_id = metadata.local_ids[0];
+    } else if (!ryu_ldn::metadata::IsAllowed(metadata, local_comm_id)) {
+        LOG_ERROR("Connect: explicit LocalCommunicationId not listed in installed NACP");
+        R_RETURN(MAKERESULT(0x10, 23));
     }
 
     // Log SessionId for debugging (server uses this to find the game)
@@ -2115,10 +2127,8 @@ void ICommunicationService::HandleScanReplyPacket(const uint8_t* data, size_t si
                          result.networkId.intentId.sceneId, m_expected_scene_id);
                 result.networkId.intentId.sceneId = m_expected_scene_id;
             }
-            if (m_local_communication_id != 0 &&
-                result.networkId.intentId.localCommunicationId != m_local_communication_id) {
-                result.networkId.intentId.localCommunicationId = m_local_communication_id;
-            }
+            // Preserve the actual ID from the remote room. An application may legally
+            // use ANY of its eight NACP IDs, not just entry 0.
 
             m_scan_result_count++;
             // Log SessionId so we can compare with Connect request
