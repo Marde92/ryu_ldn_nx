@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - test/mhr-16-0-2-version
+      - test/ldn-id-diagnostics
   workflow_dispatch:
 
 permissions:
