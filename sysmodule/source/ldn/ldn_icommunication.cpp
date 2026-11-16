@@ -1782,13 +1782,8 @@ void ICommunicationService::HandleConnectedPacket(const uint8_t* data, size_t si
             m_network_info.networkId.intentId.sceneId = m_expected_scene_id;
         }
 
-        // Also fix localCommunicationId if needed (like in Connect request)
-        if (m_local_communication_id != 0 &&
-            m_network_info.networkId.intentId.localCommunicationId != m_local_communication_id) {
-            LOG_INFO("Connected: fixing localCommId 0x%016llX -> 0x%016lx",
-                     m_network_info.networkId.intentId.localCommunicationId, m_local_communication_id);
-            m_network_info.networkId.intentId.localCommunicationId = m_local_communication_id;
-        }
+        // Preserve the returned room's actual LocalCommunicationId: a game may
+        // intentionally select any of the eight allowed NACP entries.
 
         // Force a non-zero Wi-Fi channel — same trick as ldn_mitm's
         // LANDiscovery::createNetwork (`if (channel == 0) channel = 6`).
@@ -1901,10 +1896,7 @@ void ICommunicationService::HandleSyncNetworkPacket(const uint8_t* data, size_t 
         if (m_expected_scene_id != 0 && m_network_info.networkId.intentId.sceneId != m_expected_scene_id) {
             m_network_info.networkId.intentId.sceneId = m_expected_scene_id;
         }
-        if (m_local_communication_id != 0 &&
-            m_network_info.networkId.intentId.localCommunicationId != m_local_communication_id) {
-            m_network_info.networkId.intentId.localCommunicationId = m_local_communication_id;
-        }
+        // Preserve returned LocalCommunicationId; don't overwrite explicit NACP IDs.
         LOG_INFO("SyncNetwork step3: scene/comm-id fix done");
         ryu_ldn::debug::g_logger.flush();
 
