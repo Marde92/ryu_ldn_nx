@@ -24,6 +24,7 @@ extern "C" {
 #include "config/config_ipc_service.hpp"
 #include "config/game_whitelist.hpp"
 #include "debug/log.hpp"
+#include "metadata/game_metadata.hpp"
 
 namespace ams {
 
@@ -379,6 +380,7 @@ namespace ams {
             // Initialize logger with debug settings
             ryu_ldn::debug::g_logger.init(config.debug, ryu_ldn::config::LOG_PATH);
             LOG_INFO("ryu_ldn_nx sysmodule starting");
+            ryu_ldn::metadata::StartWorker();
             LOG_INFO("Config loaded from %s", ryu_ldn::config::CONFIG_PATH);
 
             // Load game whitelist from file (once at startup)
