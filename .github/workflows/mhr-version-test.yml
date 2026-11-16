@@ -1,10 +1,11 @@
-name: MHR LDN diagnostic sysmodule and overlay
+name: Automatic installed-NACP LDN metadata build
 
 on:
   push:
     branches:
       - test/mhr-16-0-2-version
       - test/ldn-id-diagnostics
+      - test/automatic-nacp-worker
   workflow_dispatch:
 
 permissions:
