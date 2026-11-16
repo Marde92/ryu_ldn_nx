@@ -647,6 +647,10 @@ Result ICommunicationService::Scan(
     // Nintendo SDK does this internally, but we intercept before that happens
     // See Ryujinx NeedsRealId handling - uses NACP LocalCommunicationId[0], not program_id
     u64 local_comm_id = filter.networkId.intentId.localCommunicationId;
+    LOG_INFO("LDN_INPUT Scan: requested_local_comm_id=0x%016llX (%s), flag=0x%X",
+             static_cast<unsigned long long>(local_comm_id),
+             local_comm_id == static_cast<u64>(-1) ? "AUTO_MINUS_ONE" : (local_comm_id == 0 ? "ZERO" : "EXPLICIT"),
+             filter.flag);
     if (local_comm_id == static_cast<u64>(-1) || local_comm_id == 0) {
         local_comm_id = m_local_communication_id;
         LOG_INFO("Scan() replacing local_comm_id with NACP LocalCommunicationId=0x%016lx", local_comm_id);
@@ -847,6 +851,9 @@ Result ICommunicationService::CreateNetwork(const CreateNetworkConfig &data) {
     // Replace LocalCommunicationId=-1 with real LocalCommunicationId from NACP
     // See Ryujinx NeedsRealId handling - uses NACP LocalCommunicationId[0], not program_id
     u64 local_comm_id = data.networkConfig.intentId.localCommunicationId;
+    LOG_INFO("LDN_INPUT CreateNetwork: requested_local_comm_id=0x%016llX (%s)",
+             static_cast<unsigned long long>(local_comm_id),
+             local_comm_id == static_cast<u64>(-1) ? "AUTO_MINUS_ONE" : (local_comm_id == 0 ? "ZERO" : "EXPLICIT"));
     if (local_comm_id == static_cast<u64>(-1) || local_comm_id == 0) {
         local_comm_id = m_local_communication_id;
         LOG_INFO("CreateNetwork() replacing local_comm_id with NACP LocalCommunicationId=0x%016lx", local_comm_id);
@@ -1171,6 +1178,9 @@ Result ICommunicationService::Connect(const ConnectNetworkData &dat, const Netwo
     // Replace LocalCommunicationId=-1 with real LocalCommunicationId from NACP
     // See Ryujinx NeedsRealId handling - uses NACP LocalCommunicationId[0], not program_id
     u64 local_comm_id = data.networkId.intentId.localCommunicationId;
+    LOG_INFO("LDN_INPUT Connect: requested_local_comm_id=0x%016llX (%s)",
+             static_cast<unsigned long long>(local_comm_id),
+             local_comm_id == static_cast<u64>(-1) ? "AUTO_MINUS_ONE" : (local_comm_id == 0 ? "ZERO" : "EXPLICIT"));
     if (local_comm_id == static_cast<u64>(-1) || local_comm_id == 0) {
         local_comm_id = m_local_communication_id;
         LOG_INFO("Connect() replacing local_comm_id with NACP LocalCommunicationId=0x%016lx", local_comm_id);
