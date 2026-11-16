@@ -2001,8 +2001,9 @@ void ICommunicationService::HandleExternalProxyPacket(const uint8_t* data, size_
 
 void ICommunicationService::HandleProxyDataPacket(const uint8_t* data, size_t size) {
     // Route to BSD MITM proxy sockets for transparent game socket interception
-    LOG_INFO("HandleServerPacket: ProxyData ENTRY (size=%zu)", size);
-    ryu_ldn::debug::g_logger.flush();
+    // Hot packet path: never synchronously flush the SD card on each UDP packet.
+    // Periodic logger maintenance flushes buffered logs independently.
+    LOG_VERBOSE("HandleServerPacket: ProxyData ENTRY (size=%zu)", size);
     if (size >= sizeof(ryu_ldn::protocol::ProxyDataHeader)) {
         const auto* proxy_header = reinterpret_cast<const ryu_ldn::protocol::ProxyDataHeader*>(data);
         const uint8_t* payload = data + sizeof(ryu_ldn::protocol::ProxyDataHeader);
