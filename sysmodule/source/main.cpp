@@ -370,6 +370,12 @@ namespace ams {
             ryu_ldn::config::Config config = ryu_ldn::config::get_default_config();
             ryu_ldn::config::load_config(ryu_ldn::config::CONFIG_PATH, config);
 
+            // Diagnostic build: force file logging even if INI uses an unsupported section.
+            // Do not change network or other config values.
+            config.debug.enabled = true;
+            config.debug.level = 3;
+            config.debug.log_to_file = true;
+
             // Initialize logger with debug settings
             ryu_ldn::debug::g_logger.init(config.debug, ryu_ldn::config::LOG_PATH);
             LOG_INFO("ryu_ldn_nx sysmodule starting");
