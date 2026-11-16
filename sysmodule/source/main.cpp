@@ -374,7 +374,7 @@ namespace ams {
             // Diagnostic build: force file logging even if INI uses an unsupported section.
             // Do not change network or other config values.
             config.debug.enabled = true;
-            config.debug.level = 3;
+            config.debug.level = 2;  // Info: no per-packet verbose dumps
             config.debug.log_to_file = true;
 
             // Initialize logger with debug settings
