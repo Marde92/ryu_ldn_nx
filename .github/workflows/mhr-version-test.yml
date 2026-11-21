@@ -8,6 +8,7 @@ on:
       - test/automatic-nacp-worker
       - fix/game-switch-deadlock
       - test/bsd-forward-only
+      - test/retain-bsd-forward-session
   workflow_dispatch:
 
 permissions:
@@ -69,7 +70,7 @@ jobs:
       - name: Upload version test package
         uses: actions/upload-artifact@v4
         with:
-          name: ryu-ldn-nx-BSD-forward-only
+          name: ryu-ldn-nx-BSD-retain-diagnostic
           path: mhr-test-package/
           if-no-files-found: error
           include-hidden-files: true
