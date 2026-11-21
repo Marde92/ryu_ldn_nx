@@ -143,6 +143,15 @@ class NetworkSettingsGui;
 class LdnSettingsGui;
 class DebugSettingsGui;
 class HexKeyboardGui;
+class HostEditorGui;
+class NumericEditorGui;
+
+static bool SaveOverlayConfig() {
+    auto* svc = ryuLdnGetService();
+    if (!svc) return false;
+    RyuLdnConfigResult result = RyuLdnConfigResult_IoError;
+    return R_SUCCEEDED(ryuLdnSaveConfig(svc, &result)) && result == RyuLdnConfigResult_Success;
+}
 
 //=============================================================================
 // Hex Keyboard GUI
@@ -349,12 +358,12 @@ private:
 
         if (m_inputLen == 0) {
             // Clear passphrase
-            ryuLdnSetPassphrase(svc, "");
+            if (R_SUCCEEDED(ryuLdnSetPassphrase(svc, ""))) SaveOverlayConfig();
         } else if (m_inputLen == 8) {
             // Build full passphrase with prefix
             char full[32];
             snprintf(full, sizeof(full), "Ryujinx-%s", m_input);
-            ryuLdnSetPassphrase(svc, full);
+            if (R_SUCCEEDED(ryuLdnSetPassphrase(svc, full))) SaveOverlayConfig();
         }
         // If not 8 chars, don't save (invalid)
     }
@@ -464,7 +473,7 @@ public:
 
         this->setStateChangedListener([](bool enabled) {
             RyuLdnConfigService* svc = ryuLdnGetService();
-            if (svc) ryuLdnSetDebugEnabled(svc, enabled ? 1 : 0);
+            if (svc && R_SUCCEEDED(ryuLdnSetDebugEnabled(svc, enabled ? 1 : 0))) SaveOverlayConfig();
         });
     }
 };
@@ -682,6 +691,232 @@ public:
 // Settings Submenus
 //=============================================================================
 
+
+/**
+ * Editable host name / IPv4 address, entirely inside Tesla. Opening the
+ * Nintendo software keyboard applet from an overlay is not dependable.
+ * D-pad chooses a character, A appends, Y inserts '.', X deletes,
+ * + saves (with readback), B cancels.
+ */
+class HostEditorGui : public tsl::Gui {
+public:
+    HostEditorGui() {
+        auto* svc = ryuLdnGetService();
+        u16 port = 0;
+        memset(m_host, 0, sizeof(m_host));
+        if (svc && R_SUCCEEDED(ryuLdnGetServerAddress(svc, m_host, &port))) m_port = port;
+        m_length = strlen(m_host);
+        if (m_length > 63) { m_length = 63; m_host[63] = '\0'; }
+    }
+
+    tsl::elm::Element* createUI() override {
+        auto* frame = new tsl::elm::OverlayFrame("Edit Server Host", "A=Add  Y=Dot  X=Delete  +=Save");
+        auto* list = new tsl::elm::List();
+        list->addItem(new tsl::elm::CategoryHeader("Host / IPv4"));
+        m_hostItem = new tsl::elm::ListItem("Address");
+        list->addItem(m_hostItem);
+        m_charItem = new tsl::elm::ListItem("Selected");
+        list->addItem(m_charItem);
+        list->addItem(new tsl::elm::ListItem("Up / Down: change character"));
+        list->addItem(new tsl::elm::ListItem("Left / Right: jump 5 chars"));
+        list->addItem(new tsl::elm::ListItem("A: add  Y: dot  X: delete"));
+        auto* save = new tsl::elm::ListItem("Save Host");
+        save->setValue("A or +");
+        save->setClickListener([this](u64 keys) {
+            if (keys & HidNpadButton_A) { Save(); return true; }
+            return false;
+        });
+        list->addItem(save);
+        m_resultItem = new tsl::elm::ListItem("Result");
+        list->addItem(m_resultItem);
+        frame->setContent(list);
+        Update();
+        return frame;
+    }
+
+    bool handleInput(u64 keysDown, u64, const HidTouchState&,
+                     HidAnalogStickState, HidAnalogStickState) override {
+        constexpr int count = sizeof(kChars) - 1;
+        if (keysDown & HidNpadButton_Up) m_charIndex = (m_charIndex + count - 1) % count;
+        else if (keysDown & HidNpadButton_Down) m_charIndex = (m_charIndex + 1) % count;
+        else if (keysDown & HidNpadButton_Left) m_charIndex = (m_charIndex + count - 5) % count;
+        else if (keysDown & HidNpadButton_Right) m_charIndex = (m_charIndex + 5) % count;
+        else if (keysDown & HidNpadButton_A) Add(kChars[m_charIndex]);
+        else if (keysDown & HidNpadButton_Y) Add('.');
+        else if (keysDown & HidNpadButton_X) { if (m_length) m_host[--m_length] = '\0'; }
+        else if (keysDown & HidNpadButton_Plus) Save();
+        else if (keysDown & HidNpadButton_B) { tsl::goBack(); return true; }
+        else return false;
+        Update();
+        return true;
+    }
+
+private:
+    inline static constexpr char kChars[] = "0123456789abcdefghijklmnopqrstuvwxyz-";
+    char m_host[64]{};
+    size_t m_length = 0;
+    u16 m_port = 30456;
+    int m_charIndex = 0;
+    tsl::elm::ListItem* m_hostItem = nullptr;
+    tsl::elm::ListItem* m_charItem = nullptr;
+    tsl::elm::ListItem* m_resultItem = nullptr;
+
+    void Add(char c) {
+        if (m_length < sizeof(m_host) - 1) {
+            m_host[m_length++] = c;
+            m_host[m_length] = '\0';
+        }
+    }
+    void Update() {
+        if (m_hostItem) m_hostItem->setValue(m_length ? m_host : "(empty)");
+        if (m_charItem) { char buf[16]; snprintf(buf, sizeof(buf), "%c", kChars[m_charIndex]); m_charItem->setValue(buf); }
+    }
+    void Save() {
+        auto* svc = ryuLdnGetService();
+        if (!svc || !m_length) { m_resultItem->setValue("Invalid host"); return; }
+        Result rc = ryuLdnSetServerAddress(svc, m_host, m_port);
+        if (R_FAILED(rc) || !SaveOverlayConfig()) { m_resultItem->setValue("Save failed"); return; }
+        char savedHost[64]{};
+        u16 savedPort = 0;
+        if (R_SUCCEEDED(ryuLdnGetServerAddress(svc, savedHost, &savedPort)) &&
+            strcmp(savedHost, m_host) == 0 && savedPort == m_port) {
+            m_resultItem->setValue("Saved! Reconnect needed");
+        } else {
+            m_resultItem->setValue("Readback failed");
+        }
+    }
+};
+
+/** Reusable, bounded number editor backed by existing ryu:cfg IPC setters. */
+class NumericEditorGui : public tsl::Gui {
+public:
+    enum class Setting { ServerPort, ConnectTimeout, PingInterval, DebugLevel };
+    explicit NumericEditorGui(Setting setting) : m_setting(setting) {
+        auto* svc = ryuLdnGetService();
+        if (!svc) return;
+        switch (m_setting) {
+            case Setting::ServerPort: {
+                char host[64]{}; u16 port = 30456;
+                if (R_SUCCEEDED(ryuLdnGetServerAddress(svc, host, &port))) {
+                    strncpy(m_host, host, sizeof(m_host)-1); m_value = port;
+                }
+                m_step = 1; break;
+            }
+            case Setting::ConnectTimeout:
+                ryuLdnGetConnectTimeout(svc, &m_value); m_step = 1000; break;
+            case Setting::PingInterval:
+                ryuLdnGetPingInterval(svc, &m_value); m_step = 1000; break;
+            case Setting::DebugLevel:
+                ryuLdnGetDebugLevel(svc, &m_value); m_step = 1; break;
+        }
+    }
+
+    tsl::elm::Element* createUI() override {
+        const char* title = Title();
+        auto* frame = new tsl::elm::OverlayFrame(title, "Change, then save");
+        auto* list = new tsl::elm::List();
+        m_valueItem = new tsl::elm::ListItem("Current value");
+        list->addItem(m_valueItem);
+        m_stepItem = new tsl::elm::ListItem("Step");
+        list->addItem(m_stepItem);
+
+        auto* decrease = new tsl::elm::ListItem("Decrease");
+        decrease->setValue("-");
+        decrease->setClickListener([this](u64 k) { if (k & HidNpadButton_A) { Adjust(false); return true; } return false; });
+        list->addItem(decrease);
+
+        auto* increase = new tsl::elm::ListItem("Increase");
+        increase->setValue("+");
+        increase->setClickListener([this](u64 k) { if (k & HidNpadButton_A) { Adjust(true); return true; } return false; });
+        list->addItem(increase);
+
+        if (m_setting != Setting::DebugLevel) {
+            auto* step = new tsl::elm::ListItem("Change Step");
+            step->setValue("1 / 10 / 100 / 1000");
+            step->setClickListener([this](u64 k) {
+                if (k & HidNpadButton_A) {
+                    m_step = (m_step == 1) ? 10 : (m_step == 10) ? 100 : (m_step == 100) ? 1000 : 1;
+                    Update(); return true;
+                }
+                return false;
+            });
+            list->addItem(step);
+        }
+
+        auto* save = new tsl::elm::ListItem("Save Setting");
+        save->setValue("Press A");
+        save->setClickListener([this](u64 k) { if (k & HidNpadButton_A) { Save(); return true; } return false; });
+        list->addItem(save);
+        m_resultItem = new tsl::elm::ListItem("Result");
+        list->addItem(m_resultItem);
+        frame->setContent(list);
+        Update();
+        return frame;
+    }
+
+private:
+    Setting m_setting;
+    u32 m_value = 0;
+    u32 m_step = 1;
+    char m_host[64]{};
+    tsl::elm::ListItem* m_valueItem = nullptr;
+    tsl::elm::ListItem* m_stepItem = nullptr;
+    tsl::elm::ListItem* m_resultItem = nullptr;
+
+    const char* Title() const {
+        switch (m_setting) {
+            case Setting::ServerPort: return "Server Port";
+            case Setting::ConnectTimeout: return "Connect Timeout";
+            case Setting::PingInterval: return "Ping Interval";
+            case Setting::DebugLevel: return "Log Level";
+        }
+        return "Setting";
+    }
+    void Update() {
+        if (m_valueItem) {
+            char buf[48];
+            if (m_setting == Setting::DebugLevel) snprintf(buf, sizeof(buf), "%s (%u)", DebugLevelToString(m_value), m_value);
+            else if (m_setting == Setting::ConnectTimeout || m_setting == Setting::PingInterval) snprintf(buf, sizeof(buf), "%u ms", m_value);
+            else snprintf(buf, sizeof(buf), "%u", m_value);
+            m_valueItem->setValue(buf);
+        }
+        if (m_stepItem) {
+            char buf[24]; snprintf(buf, sizeof(buf), "%u", m_step); m_stepItem->setValue(buf);
+        }
+    }
+    void Adjust(bool up) {
+        u32 low = 1, high = 65535;
+        if (m_setting == Setting::DebugLevel) { low = 0; high = 3; }
+        if (m_setting == Setting::ConnectTimeout || m_setting == Setting::PingInterval) { low = 1000; high = 120000; }
+        if (up) m_value = (m_value >= high || m_step > high - m_value) ? high : m_value + m_step;
+        else m_value = (m_value <= low || m_step > m_value - low) ? low : m_value - m_step;
+        Update();
+    }
+    void Save() {
+        auto* svc = ryuLdnGetService();
+        if (!svc) { m_resultItem->setValue("Service unavailable"); return; }
+        Result rc = 0;
+        switch (m_setting) {
+            case Setting::ServerPort:
+                if (!m_host[0]) { m_resultItem->setValue("Host missing"); return; }
+                rc = ryuLdnSetServerAddress(svc, m_host, static_cast<u16>(m_value)); break;
+            case Setting::ConnectTimeout: rc = ryuLdnSetConnectTimeout(svc, m_value); break;
+            case Setting::PingInterval: rc = ryuLdnSetPingInterval(svc, m_value); break;
+            case Setting::DebugLevel: rc = ryuLdnSetDebugLevel(svc, m_value); break;
+        }
+        if (R_FAILED(rc) || !SaveOverlayConfig()) { m_resultItem->setValue("Save failed"); return; }
+        u32 readback = 0;
+        Result verify = 0;
+        switch (m_setting) {
+            case Setting::ServerPort: { char host[64]{}; u16 port = 0; verify = ryuLdnGetServerAddress(svc, host, &port); readback = port; break; }
+            case Setting::ConnectTimeout: verify = ryuLdnGetConnectTimeout(svc, &readback); break;
+            case Setting::PingInterval: verify = ryuLdnGetPingInterval(svc, &readback); break;
+            case Setting::DebugLevel: verify = ryuLdnGetDebugLevel(svc, &readback); break;
+        }
+        m_resultItem->setValue(R_SUCCEEDED(verify) && readback == m_value ? "Saved! Reconnect if needed" : "Readback failed");
+    }
+};
+
 /**
  * @brief Server Settings GUI
  *
@@ -723,6 +958,15 @@ public:
         }
         list->addItem(serverItem);
 
+        auto* editHost = new tsl::elm::ListItem("Edit Host / IP");
+        editHost->setValue(">");
+        editHost->setClickListener([](u64 k) { if (k & HidNpadButton_A) { tsl::changeTo<HostEditorGui>(); return true; } return false; });
+        list->addItem(editHost);
+        auto* editPort = new tsl::elm::ListItem("Edit Server Port");
+        editPort->setValue(">");
+        editPort->setClickListener([](u64 k) { if (k & HidNpadButton_A) { tsl::changeTo<NumericEditorGui>(NumericEditorGui::Setting::ServerPort); return true; } return false; });
+        list->addItem(editPort);
+
         // TLS encryption toggle
         auto tlsItem = new tsl::elm::ToggleListItem("Use TLS", false);
         u32 useTls;
@@ -731,7 +975,7 @@ public:
         }
         tlsItem->setStateChangedListener([](bool enabled) {
             RyuLdnConfigService* svc = ryuLdnGetService();
-            if (svc) ryuLdnSetUseTls(svc, enabled ? 1 : 0);
+            if (svc && R_SUCCEEDED(ryuLdnSetUseTls(svc, enabled ? 1 : 0))) SaveOverlayConfig();
         });
         list->addItem(tlsItem);
 
@@ -778,6 +1022,10 @@ public:
             timeoutItem->setValue(buf);
         }
         list->addItem(timeoutItem);
+        auto* editTimeout = new tsl::elm::ListItem("Edit Connect Timeout");
+        editTimeout->setValue(">");
+        editTimeout->setClickListener([](u64 k) { if (k & HidNpadButton_A) { tsl::changeTo<NumericEditorGui>(NumericEditorGui::Setting::ConnectTimeout); return true; } return false; });
+        list->addItem(editTimeout);
 
         // Ping interval display
         auto pingItem = new tsl::elm::ListItem("Ping Interval");
@@ -788,6 +1036,10 @@ public:
             pingItem->setValue(buf);
         }
         list->addItem(pingItem);
+        auto* editPing = new tsl::elm::ListItem("Edit Ping Interval");
+        editPing->setValue(">");
+        editPing->setClickListener([](u64 k) { if (k & HidNpadButton_A) { tsl::changeTo<NumericEditorGui>(NumericEditorGui::Setting::PingInterval); return true; } return false; });
+        list->addItem(editPing);
 
         frame->setContent(list);
         return frame;
@@ -837,7 +1089,7 @@ public:
         }
         ldnItem->setStateChangedListener([](bool enabled) {
             RyuLdnConfigService* svc = ryuLdnGetService();
-            if (svc) ryuLdnSetLdnEnabled(svc, enabled ? 1 : 0);
+            if (svc && R_SUCCEEDED(ryuLdnSetLdnEnabled(svc, enabled ? 1 : 0))) SaveOverlayConfig();
         });
         list->addItem(ldnItem);
 
@@ -874,7 +1126,7 @@ public:
                 if (svc) {
                     char newPass[32];
                     GenerateRandomPassphraseOverlay(newPass, sizeof(newPass));
-                    ryuLdnSetPassphrase(svc, newPass);
+                    if (R_SUCCEEDED(ryuLdnSetPassphrase(svc, newPass))) SaveOverlayConfig();
                 }
                 // Refresh the GUI
                 tsl::changeTo<LdnSettingsGui>();
@@ -890,7 +1142,7 @@ public:
         clearItem->setClickListener([](u64 keys) {
             if (keys & HidNpadButton_A) {
                 RyuLdnConfigService* svc = ryuLdnGetService();
-                if (svc) ryuLdnSetPassphrase(svc, "");
+                if (svc && R_SUCCEEDED(ryuLdnSetPassphrase(svc, ""))) SaveOverlayConfig();
                 tsl::changeTo<LdnSettingsGui>();
                 return true;
             }
@@ -948,7 +1200,7 @@ public:
         }
         debugItem->setStateChangedListener([](bool enabled) {
             RyuLdnConfigService* svc = ryuLdnGetService();
-            if (svc) ryuLdnSetDebugEnabled(svc, enabled ? 1 : 0);
+            if (svc && R_SUCCEEDED(ryuLdnSetDebugEnabled(svc, enabled ? 1 : 0))) SaveOverlayConfig();
         });
         list->addItem(debugItem);
 
@@ -959,6 +1211,10 @@ public:
             levelItem->setValue(DebugLevelToString(level));
         }
         list->addItem(levelItem);
+        auto* editLevel = new tsl::elm::ListItem("Change Log Level");
+        editLevel->setValue(">");
+        editLevel->setClickListener([](u64 k) { if (k & HidNpadButton_A) { tsl::changeTo<NumericEditorGui>(NumericEditorGui::Setting::DebugLevel); return true; } return false; });
+        list->addItem(editLevel);
 
         // Log to file toggle
         auto logFileItem = new tsl::elm::ToggleListItem("Log to File", false);
@@ -968,7 +1224,7 @@ public:
         }
         logFileItem->setStateChangedListener([](bool enabled) {
             RyuLdnConfigService* svc = ryuLdnGetService();
-            if (svc) ryuLdnSetLogToFile(svc, enabled ? 1 : 0);
+            if (svc && R_SUCCEEDED(ryuLdnSetLogToFile(svc, enabled ? 1 : 0))) SaveOverlayConfig();
         });
         list->addItem(logFileItem);
 
