@@ -69,85 +69,76 @@ bool ProxySocketManager::IsProxySocket(s32 fd) const {
 }
 
 bool ProxySocketManager::CloseProxySocket(s32 fd) {
-    std::scoped_lock lock(m_mutex);
-
-    auto it = m_sockets.find(fd);
-    if (it == m_sockets.end()) {
-        return false;
-    }
-
-    // Get socket info before closing
-    ProxySocket* socket = it->second.get();
-    if (socket != nullptr) {
-        // Release the port
-        const auto& local_addr = socket->GetLocalAddr();
-        if (local_addr.GetPort() != 0) {
-            m_port_pool.ReleasePort(local_addr.GetPort(), socket->GetProtocol());
+    // ProxySocket::Close() can send ProxyDisconnect, which calls back into
+    // ProxySocketManager::SendProxyDisconnect() and takes m_mutex again.
+    // Remove the socket under the lock, then close it AFTER releasing the lock.
+    std::unique_ptr<ProxySocket> socket;
+    {
+        std::scoped_lock lock(m_mutex);
+        auto it = m_sockets.find(fd);
+        if (it == m_sockets.end()) {
+            return false;
         }
 
-        // Close the socket
-        Result close_result = socket->Close();
-        if (R_FAILED(close_result)) {
-            // Log but continue cleanup - socket will be destroyed regardless
-            AMS_UNUSED(close_result);
-        }
-    }
-
-    // Remove from registry
-    m_sockets.erase(it);
-
-    return true;
-}
-
-void ProxySocketManager::CloseAllProxySockets() {
-    std::scoped_lock lock(m_mutex);
-
-    // Close all sockets
-    for (auto& [fd, socket] : m_sockets) {
+        socket = std::move(it->second);
+        m_sockets.erase(it);
         if (socket != nullptr) {
-            Result close_result = socket->Close();
-            if (R_FAILED(close_result)) {
-                // Log but continue cleanup - socket will be destroyed regardless
-                AMS_UNUSED(close_result);
+            const auto& local_addr = socket->GetLocalAddr();
+            if (local_addr.GetPort() != 0) {
+                m_port_pool.ReleasePort(local_addr.GetPort(), socket->GetProtocol());
             }
         }
     }
 
-    // Clear registry
-    m_sockets.clear();
-
-    // Release all ports
-    m_port_pool.ReleaseAll();
+    if (socket != nullptr) {
+        Result close_result = socket->Close();
+        AMS_UNUSED(close_result);
+    }
+    return true;
 }
 
-void ProxySocketManager::Reset() {
-    std::scoped_lock lock(m_mutex);
-
-    // Close all proxy sockets
-    for (auto& [fd, socket] : m_sockets) {
+void ProxySocketManager::CloseAllProxySockets() {
+    // Avoid invoking socket callbacks while holding the registry mutex.
+    decltype(m_sockets) sockets;
+    {
+        std::scoped_lock lock(m_mutex);
+        sockets.swap(m_sockets);
+        m_port_pool.ReleaseAll();
+    }
+    for (auto& [fd, socket] : sockets) {
         if (socket != nullptr) {
             Result close_result = socket->Close();
             AMS_UNUSED(close_result);
         }
     }
-    m_sockets.clear();
+}
 
-    // Release all ports
-    m_port_pool.ReleaseAll();
+void ProxySocketManager::Reset() {
+    // Do not call ProxySocket::Close() with m_mutex held: TCP close can
+    // re-enter SendProxyDisconnect() and deadlock on this same mutex.
+    decltype(m_sockets) sockets;
+    {
+        std::scoped_lock lock(m_mutex);
+        sockets.swap(m_sockets);
+        m_port_pool.ReleaseAll();
 
-    // Clear pending packets ring (no dealloc — just reset indices)
-    m_pending_head = 0;
-    m_pending_tail = 0;
-    m_pending_count = 0;
+        // Discard pending data and callbacks on disconnect.
+        m_pending_head = 0;
+        m_pending_tail = 0;
+        m_pending_count = 0;
+        m_local_ip = 0;
+        m_send_callback = nullptr;
+        m_proxy_connect_callback = nullptr;
+        m_proxy_connect_reply_callback = nullptr;
+        m_proxy_disconnect_callback = nullptr;
+    }
 
-    // Reset local IP
-    m_local_ip = 0;
-
-    // Clear callbacks
-    m_send_callback = nullptr;
-    m_proxy_connect_callback = nullptr;
-    m_proxy_connect_reply_callback = nullptr;
-    m_proxy_disconnect_callback = nullptr;
+    for (auto& [fd, socket] : sockets) {
+        if (socket != nullptr) {
+            Result close_result = socket->Close();
+            AMS_UNUSED(close_result);
+        }
+    }
 }
 
 // =============================================================================
