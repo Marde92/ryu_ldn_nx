@@ -267,61 +267,13 @@ BsdMitmService::~BsdMitmService() {
  * @return true For games in the whitelist, false otherwise
  */
 bool BsdMitmService::ShouldMitm(const sm::MitmProcessInfo& client_info) {
-    // Static counter to track all ShouldMitm calls for debugging
-    static u32 s_call_count = 0;
-    u32 call_id = ++s_call_count;
-
-    LOG_INFO("BSD ShouldMitm #%u: ENTER pid=%lu, program_id=0x%016lx",
-             call_id, client_info.process_id.value, client_info.program_id.value);
-
-    // Our sysmodule's program_id - do not intercept ourselves
-    constexpr u64 OUR_PROGRAM_ID = 0x4200000000000010ULL;
-
-    // Skip our own sysmodule to avoid infinite recursion
-    if (client_info.program_id.value == OUR_PROGRAM_ID) {
-        LOG_INFO("BSD ShouldMitm #%u: SKIP (our sysmodule)", call_id);
-        return false;
-    }
-
-    u64 program_id = client_info.program_id.value;
-
-    // Skip non-applications (system services, applets, etc.)
-    if (program_id < 0x0100000000000000ULL) {
-        LOG_INFO("BSD ShouldMitm #%u: SKIP (system 0x%016lx)", call_id, program_id);
-        return false;
-    }
-
-    // First check: is this game in the LDN whitelist?
-    LOG_INFO("BSD ShouldMitm #%u: checking whitelist for 0x%016lx...", call_id, program_id);
-    bool is_whitelisted = ryu_ldn::config::IsGameInWhitelist(program_id);
-    LOG_INFO("BSD ShouldMitm #%u: whitelist result=%s", call_id, is_whitelisted ? "YES" : "NO");
-
-    if (!is_whitelisted) {
-        return false;
-    }
-
-    // Track session count and decide whether to intercept
-    {
-        std::scoped_lock lock(g_mitm_pids_mutex);
-        u32& count = g_mitm_pid_count[client_info.process_id.value];
-        count++;
-
-        // Skip the first BSD session from each game process.
-        // Games typically open a "dummy" first session that is never used
-        // (no RegisterClient is ever called on it). Intercepting this session
-        // causes system instability/crashes even if we try to handle it gracefully.
-        // The actual networking happens on session #2+.
-        if (count == 1) {
-            LOG_INFO("BSD ShouldMitm #%u: SKIP first session for pid=%lu (dummy session)",
-                     call_id, client_info.process_id.value);
-            return false;
-        }
-
-        LOG_INFO("BSD ShouldMitm #%u: INTERCEPTING session #%u for pid=%lu",
-                 call_id, count, client_info.process_id.value);
-    }
-
-    return true;
+    // Diagnostic build: leave every bsd:u session completely untouched.
+    // Returning false at service-manager decision time ensures that no BSD
+    // MITM forward session, virtual socket or registration is created.
+    // Keep ldn:u MITM enabled to distinguish BSD interception from LDN/NACP.
+    LOG_INFO("BSD DIAGNOSTIC BYPASS: pid=%lu program_id=0x%016lx -> original bsd:u (NO MITM)",
+             client_info.process_id.value, client_info.program_id.value);
+    return false;
 }
 
 /**
