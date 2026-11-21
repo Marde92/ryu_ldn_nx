@@ -6,6 +6,7 @@ on:
       - test/mhr-16-0-2-version
       - test/ldn-id-diagnostics
       - test/automatic-nacp-worker
+      - fix/game-switch-deadlock
   workflow_dispatch:
 
 permissions:
