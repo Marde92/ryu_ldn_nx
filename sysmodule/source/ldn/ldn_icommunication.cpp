@@ -51,11 +51,26 @@ alignas(os::ThreadStackAlignment) static u8 g_p2p_connect_thread_stack[0x4000];
  * Like Ryujinx _timeout callback that calls DisconnectInternal().
  */
 void ICommunicationService::OnInactivityTimeout() {
-    std::scoped_lock lock(g_active_service_mutex);
+    // Check the active service under the mutex, but NEVER disconnect while
+    // holding it. DisconnectFromServer() acquires g_active_service_mutex again
+    // to unregister the active service; keeping the lock here deadlocks the
+    // receive thread, and the service destructor then blocks in WaitThread().
+    //
+    // CheckTimeout() runs on this service's receive thread. Its destructor
+    // joins that thread before destroying the instance, so the pointer
+    // remains valid for this callback after we release the mutex.
+    ICommunicationService* service = nullptr;
+    {
+        std::scoped_lock lock(g_active_service_mutex);
+        if (g_active_ldn_service != nullptr && !g_active_ldn_service->m_network_connected) {
+            service = g_active_ldn_service;
+        }
+    }
 
-    if (g_active_ldn_service != nullptr && !g_active_ldn_service->m_network_connected) {
-        LOG_INFO("Inactivity timeout - disconnecting from server");
-        g_active_ldn_service->DisconnectFromServer();
+    if (service != nullptr) {
+        LOG_INFO("Inactivity timeout: disconnecting (active mutex released)");
+        service->DisconnectFromServer();
+        LOG_INFO("Inactivity timeout: disconnect completed");
     }
 }
 
