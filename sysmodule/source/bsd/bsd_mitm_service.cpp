@@ -63,6 +63,11 @@ extern "C" {
 
 namespace ams::mitm::bsd {
 
+// DIAGNOSTIC ONLY: accept bsd:u MITM sessions, but forward all socket calls
+// to the original Nintendo service. No virtual LDN proxy sockets are created.
+static constexpr bool kBsdForwardOnlyDiagnostic = true;
+
+
 // =============================================================================
 // Socket Type/Protocol Tracking
 // =============================================================================
@@ -1059,7 +1064,7 @@ Result BsdMitmService::Bind(
     // Check if this is an LDN address (10.114.x.x)
     // Copy to aligned stack buffer — IPC pointer may be misaligned,
     // and SockAddrIn::IsLdnAddress() does __builtin_bswap32 which faults on ARM64.
-    if (addr.GetSize() >= sizeof(ryu_ldn::bsd::SockAddrIn) && addr.GetPointer() != nullptr) {
+    if (!kBsdForwardOnlyDiagnostic && addr.GetSize() >= sizeof(ryu_ldn::bsd::SockAddrIn) && addr.GetPointer() != nullptr) {
         ryu_ldn::bsd::SockAddrIn sock_addr_copy;
         __builtin_memcpy(&sock_addr_copy, addr.GetPointer(), sizeof(sock_addr_copy));
 
@@ -1257,7 +1262,7 @@ Result BsdMitmService::Connect(
     // Check if this is an LDN address (10.114.x.x)
     // Copy to aligned stack buffer — IPC pointer may be misaligned,
     // and SockAddrIn::IsLdnAddress() does __builtin_bswap32 which faults on ARM64.
-    if (addr.GetSize() >= sizeof(ryu_ldn::bsd::SockAddrIn) && addr.GetPointer() != nullptr) {
+    if (!kBsdForwardOnlyDiagnostic && addr.GetSize() >= sizeof(ryu_ldn::bsd::SockAddrIn) && addr.GetPointer() != nullptr) {
         ryu_ldn::bsd::SockAddrIn sock_addr_copy;
         __builtin_memcpy(&sock_addr_copy, addr.GetPointer(), sizeof(sock_addr_copy));
 
@@ -1716,7 +1721,7 @@ Result BsdMitmService::SendTo(
     // Copy to stack-aligned buffer before accessing — the IPC buffer pointer
     // may be misaligned, and SockAddrIn::IsLdnAddress() does
     // __builtin_bswap32 on sin_addr which faults on ARM64 if unaligned.
-    if (addr.GetSize() >= sizeof(ryu_ldn::bsd::SockAddrIn) && addr.GetPointer() != nullptr) {
+    if (!kBsdForwardOnlyDiagnostic && addr.GetSize() >= sizeof(ryu_ldn::bsd::SockAddrIn) && addr.GetPointer() != nullptr) {
         ryu_ldn::bsd::SockAddrIn dest_addr_copy;
         __builtin_memcpy(&dest_addr_copy, addr.GetPointer(), sizeof(dest_addr_copy));
 
