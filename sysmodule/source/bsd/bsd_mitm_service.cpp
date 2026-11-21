@@ -132,6 +132,12 @@ static os::Mutex g_mitm_pids_mutex{false};
 static std::vector<std::shared_ptr<::Service>> g_abandoned_forward_services;
 static os::Mutex g_abandoned_services_mutex{false};
 
+// DIAGNOSTIC ONLY: Keep registered BSD forward-service handles alive until the
+// sysmodule exits. This intentionally retains handles for debugging only.
+// DO NOT merge this into production without a proper lifecycle fix.
+static std::vector<std::shared_ptr<::Service>> g_debug_retained_registered_services;
+static os::Mutex g_debug_retained_services_mutex{false};
+
 // =============================================================================
 // Constructor / Destructor
 // =============================================================================
@@ -253,8 +259,16 @@ BsdMitmService::~BsdMitmService() {
             LOG_INFO("[BSD#%u] Abandoned services count: %zu", m_session_id, g_abandoned_forward_services.size());
         }
     }
-    // For registered sessions, m_forward_service will be closed normally
-    // when the base class destructor runs (shared_ptr goes out of scope)
+    // DIAGNOSTIC: Determine whether closing a registered bsd:u forward
+    // session at game exit causes the game-switch freeze. Intentional leak.
+    if (m_registered && m_forward_service) {
+        std::scoped_lock lock(g_debug_retained_services_mutex);
+        LOG_INFO("[BSD#%u] DIAGNOSTIC RETAIN registered bsd:u forward handle=0x%x (count before=%zu)",
+                 m_session_id, session_handle, g_debug_retained_registered_services.size());
+        g_debug_retained_registered_services.push_back(std::move(m_forward_service));
+        LOG_INFO("[BSD#%u] DIAGNOSTIC RETAIN complete (count=%zu); base destructor will not close the handle",
+                 m_session_id, g_debug_retained_registered_services.size());
+    }
 }
 
 /**
