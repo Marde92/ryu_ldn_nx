@@ -1,0 +1,50 @@
+name: Build Tesla overlay settings only
+
+on:
+  push:
+    branches:
+      - ui/functional-tesla-settings
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  overlay:
+    name: Compile Tesla overlay (sysmodule unchanged)
+    runs-on: ubuntu-latest
+    container: ghcr.io/ethiquema/ryu_ldn_nx:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build overlay
+        env:
+          DEVKITPRO: /opt/devkitpro
+        run: |
+          set -e
+          git config --global --add safe.directory '*'
+          export DEVKITARM="$DEVKITPRO/devkitARM"
+          export DEVKITA64="$DEVKITPRO/devkitA64"
+          export PATH="$DEVKITPRO/tools/bin:$DEVKITA64/bin:$PATH"
+          for tool in elf2nro nacptool; do
+            real="/opt/devkitpro/tools/bin/$tool"
+            if [ ! -f "$real.real" ]; then mv "$real" "$real.real"; fi
+            cat > "$real" <<'WRAPPER'
+          #!/bin/bash
+          exec env -u LD_PRELOAD "${0}.real" "$@"
+          WRAPPER
+            chmod +x "$real"
+          done
+          cd overlay
+          make -j4 all
+          mkdir -p "$GITHUB_WORKSPACE/overlay-test-package/switch/.overlays"
+          cp ryu_ldn_nx_overlay.ovl "$GITHUB_WORKSPACE/overlay-test-package/switch/.overlays/ryu_ldn_nx_overlay.ovl"
+      - name: Upload overlay only
+        uses: actions/upload-artifact@v4
+        with:
+          name: ryu-ldn-nx-functional-overlay-only
+          path: overlay-test-package/
+          if-no-files-found: error
+          include-hidden-files: true
