@@ -434,13 +434,13 @@ Result BsdMitmService::RegisterClient(
     LOG_INFO("[BSD#%u] RegisterClient: forward returned rc=0x%x, pid_out=0x%lx",
              m_session_id, rc.GetValue(), pid_out);
 
-    // CRITICAL: Detach the handle to prevent sf::CopyHandle destructor from closing it.
-    // The handle was forwarded to the real BSD service via serviceMitmDispatchInOut,
-    // which creates a kernel-level copy. However, sf::CopyHandle is marked as "managed"
-    // by Atmosphere's command serialization, meaning its destructor would close our
-    // local handle. Since we're a MITM proxy, we must NOT close handles that belong
-    // to the client process - we only forward them.
-    transfer_memory.Detach();
+    // A CopyHandle is duplicated for the recipient by Horizon IPC. The
+    // original handle received by this sysmodule is a *local* reference;
+    // sf::CopyHandle owns it when IsManaged() is true. Do not Detach():
+    // that would leak this local reference for every RegisterClient call.
+    // Its RAII destructor will release only our copy after this command.
+    LOG_INFO("[BSD#%u] RegisterClient COPYHANDLE_DIAG: handle=0x%x, managed=%d, forward_rc=0x%x; local handle released by RAII on return",
+             m_session_id, tmem_handle, transfer_memory.IsManaged(), rc.GetValue());
 
     // Mark this session as registered
     if (R_SUCCEEDED(rc)) {
